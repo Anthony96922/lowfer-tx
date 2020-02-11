@@ -18,6 +18,5 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-extern int am_open(char *filename, float carrier_freq, size_t len);
-extern int am_get_samples(float *am_buffer);
-extern void am_close();
+extern void am_create_carrier(float carrier_freq, size_t len);
+extern void am_get_samples(float *am_buffer);

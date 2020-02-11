@@ -27,8 +27,7 @@
 #include "lwtx.h"
 #include "am.h"
 
-#define DATA_SIZE 4096
-#define OUTPUT_DATA_SIZE (DATA_SIZE * 2)
+#define DATA_SIZE 512
 
 int stop_tx;
 
@@ -36,32 +35,18 @@ void stop() {
 	stop_tx = 1;
 }
 
-int out_channels = 2;
 float volume;
 
 void postprocess(float *inbuf, short *outbuf, size_t inbufsize) {
 	int j = 0;
 
 	for (int i = 0; i < inbufsize; i++) {
-		if (inbuf[i] <= -1 || inbuf[i] >= 1) {
-			fprintf(stderr, "overshoot! (%.7f)\n", inbuf[i]);
-		}
-		// volume control
-		inbuf[i] *= (volume / 100);
-		// scale samples
-		inbuf[i] *= 0x7fff;
-
-		if (out_channels == 2) {
-			// stereo upmix
-			outbuf[j] = outbuf[j+1] = inbuf[i];
-			j += 2;
-		} else {
-			outbuf[i] = inbuf[i];
-		}
+		outbuf[j] = outbuf[j+1] = (inbuf[i] * (volume/100)) * 32767;
+		j += 2;
 	}
 }
 
-int tx(char *audio_file, float freq, float vol) {
+int tx(float freq_k, float vol) {
 	// Gracefully stop the transmitter on SIGINT or SIGTERM
 	int signals[] = {SIGINT, SIGTERM};
 	for (int i = 0; i < 2; i++) {
@@ -73,8 +58,8 @@ int tx(char *audio_file, float freq, float vol) {
 	}
 
 	// RF output data
-	float rf_data[DATA_SIZE];
-	short dev_out[OUTPUT_DATA_SIZE];
+	float rf_data[DATA_SIZE*2];
+	short dev_out[DATA_SIZE];
 
 	// AO
 	ao_device *device;
@@ -93,20 +78,20 @@ int tx(char *audio_file, float freq, float vol) {
 	}
 
 	// Initialize the RF generator
-	if(am_open(audio_file, freq * 1000, DATA_SIZE) < 0) return 1;
+	am_create_carrier(freq_k * 1000, DATA_SIZE);
 
 	volume = vol;
 
-	printf("Starting to transmit on %.1f kHz.\n", freq);
+	printf("Starting to transmit on %.1f kHz.\n", freq_k);
 
 	// bytes = generated_frames * channels * bytes per sample
-	int bytes = DATA_SIZE * out_channels * 2;
+	int bytes = DATA_SIZE * 2 * 2;
 
 	for (;;) {
-		if (am_get_samples(rf_data) < 0) break;
+		am_get_samples(rf_data);
 
 		postprocess(rf_data, dev_out, DATA_SIZE);
-		// num_bytes = generated_frames * channels * bytes per sample
+
 		if (!ao_play(device, (char *)dev_out, bytes)) {
 			fprintf(stderr, "Error: could not play audio.\n");
 			break;
@@ -118,8 +103,6 @@ int tx(char *audio_file, float freq, float vol) {
 		}
 	}
 
-	am_close();
-
 	ao_close(device);
 	ao_shutdown();
 
@@ -128,14 +111,12 @@ int tx(char *audio_file, float freq, float vol) {
 
 int main(int argc, char **argv) {
 	int opt;
-	char *audio_file = NULL;
 	float freq = 174;
 	float txpwr = 100;
 
-	const char	*short_opt = "a:f:p:h";
+	const char	*short_opt = "f:p:h";
 	struct option	long_opt[] =
 	{
-		{"audio", 	required_argument, NULL, 'a'},
 		{"freq",	required_argument, NULL, 'f'},
 		{"power",	required_argument, NULL, 'p'},
 
@@ -147,10 +128,6 @@ int main(int argc, char **argv) {
 	{
 		switch(opt)
 		{
-			case 'a': //audio
-				audio_file = optarg;
-				break;
-
 			case 'f': //freq
 				freq = atof(optarg);
 				break;
@@ -160,7 +137,7 @@ int main(int argc, char **argv) {
 				break;
 
 			case 'h': //help
-				fprintf(stderr, "Usage: %s [--audio (-a) file] [--freq (-f) freq (kHz)] [--power (-p) tx-power]\n", argv[0]);
+				fprintf(stderr, "Usage: %s [--freq (-f) freq (kHz)] [--power (-p) tx-power]\n", argv[0]);
 				return 1;
 				break;
 
@@ -171,12 +148,13 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	if (audio_file == NULL) {
-		fprintf(stderr, "No audio file specified. Transmitting unmodulated carrier.\n");
-	}
-
 	if (freq < 170 || freq > 180) {
 		fprintf(stderr, "Frequency should be between 170 - 180 kHz for LowFER operation.\n");
+	}
+
+	if (freq > (SAMPLE_RATE/1000)/2) {
+		fprintf(stderr, "Frequency must be below %d kHz.\n", (SAMPLE_RATE/1000)/2);
+		return -1;
 	}
 
 	if (txpwr < 1 || txpwr > 100) {
@@ -184,7 +162,5 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-	int errcode = tx(audio_file, freq, txpwr);
-
-	return errcode;
+	return tx(freq, txpwr);
 }

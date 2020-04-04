@@ -18,4 +18,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define SAMPLE_RATE 384000
+#define SAMPLE_RATE	384000 // Nyquist frequency is 192 kHz
+
+#define INPUT_DATA_SIZE	32
+#define DATA_SIZE	1536 // SRC ratio may be up to 48

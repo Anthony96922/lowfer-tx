@@ -19,15 +19,12 @@
  */
 
 #include <stdio.h>
-#include <string.h>
 #include <signal.h>
 #include <getopt.h>
 #include <ao/ao.h>
 
 #include "lwtx.h"
 #include "am.h"
-
-#define DATA_SIZE 512
 
 int stop_tx;
 
@@ -46,19 +43,13 @@ void postprocess(float *inbuf, short *outbuf, size_t inbufsize) {
 	}
 }
 
-int tx(float freq_k, float vol) {
+int tx(char *audio, float freq_k, float vol) {
 	// Gracefully stop the transmitter on SIGINT or SIGTERM
-	int signals[] = {SIGINT, SIGTERM};
-	for (int i = 0; i < 2; i++) {
-		struct sigaction sa;
-
-		memset(&sa, 0, sizeof(sa));
-		sa.sa_handler = stop;
-		sigaction(signals[i], &sa, NULL);
-	}
+	signal(SIGINT, stop);
+	signal(SIGTERM, stop);
 
 	// RF output data
-	float rf_data[DATA_SIZE*2];
+	float rf_data[DATA_SIZE];
 	short dev_out[DATA_SIZE];
 
 	// AO
@@ -70,29 +61,31 @@ int tx(float freq_k, float vol) {
 	format.byte_format = AO_FMT_LITTLE;
 
 	ao_initialize();
-	int ao_driver = ao_default_driver_id();
 
-	if ((device = ao_open_live(ao_driver, &format, NULL)) == NULL) {
+	if ((device = ao_open_live(ao_default_driver_id(), &format, NULL)) == NULL) {
 		fprintf(stderr, "Error: cannot open sound device.\n");
 		return 1;
 	}
 
-	// Initialize the RF generator
-	am_create_carrier(freq_k * 1000, DATA_SIZE);
+	// Initialize
+	if (rf_init(audio, freq_k * 1000) < 0) {
+		rf_exit();
+		return 1;
+	}
 
 	volume = vol;
 
 	printf("Starting to transmit on %.1f kHz.\n", freq_k);
 
-	// bytes = generated_frames * channels * bytes per sample
-	int bytes = DATA_SIZE * 2 * 2;
+	int samples;
 
 	for (;;) {
-		am_get_samples(rf_data);
+		if ((samples = rf_get_samples(rf_data)) < 0) break;
 
-		postprocess(rf_data, dev_out, DATA_SIZE);
+		postprocess(rf_data, dev_out, samples);
 
-		if (!ao_play(device, (char *)dev_out, bytes)) {
+		// TX
+		if (!ao_play(device, (char *)dev_out, samples * 2 * 2)) {
 			fprintf(stderr, "Error: could not play audio.\n");
 			break;
 		}
@@ -103,6 +96,9 @@ int tx(float freq_k, float vol) {
 		}
 	}
 
+	// Clean up
+	rf_exit();
+
 	ao_close(device);
 	ao_shutdown();
 
@@ -111,12 +107,14 @@ int tx(float freq_k, float vol) {
 
 int main(int argc, char **argv) {
 	int opt;
+	char *audio = NULL;
 	float freq = 174;
-	float txpwr = 100;
+	float txpwr = 10;
 
-	const char	*short_opt = "f:p:h";
+	const char	*short_opt = "a:f:p:h";
 	struct option	long_opt[] =
 	{
+		{"audio",	required_argument, NULL, 'a'},
 		{"freq",	required_argument, NULL, 'f'},
 		{"power",	required_argument, NULL, 'p'},
 
@@ -128,16 +126,20 @@ int main(int argc, char **argv) {
 	{
 		switch(opt)
 		{
-			case 'f': //freq
+			case 'a':
+				audio = optarg;
+				break;
+
+			case 'f':
 				freq = atof(optarg);
 				break;
 
-			case 'p': //tx power
+			case 'p':
 				txpwr = atoi(optarg);
 				break;
 
-			case 'h': //help
-				fprintf(stderr, "Usage: %s [--freq (-f) freq (kHz)] [--power (-p) tx-power]\n", argv[0]);
+			case 'h':
+				fprintf(stderr, "Usage: %s [--audio (-a) audio file] [--freq (-f) freq (kHz)] [--power (-p) tx-power]\n", argv[0]);
 				return 1;
 				break;
 
@@ -162,5 +164,5 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-	return tx(freq, txpwr);
+	return tx(audio, freq, txpwr);
 }

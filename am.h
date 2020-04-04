@@ -18,5 +18,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-extern void am_create_carrier(float carrier_freq, size_t len);
-extern void am_get_samples(float *am_buffer);
+extern int rf_init(char *audio, float carrier_freq);
+extern int rf_get_samples(float *rf_buffer);
+extern void rf_exit();

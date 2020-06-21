@@ -30,12 +30,7 @@
 float *audio_input;
 float *resampled_input;
 
-int channels;
-
 SNDFILE *inf;
-
-// SRC
-int src_errorcode;
 
 SRC_STATE *src_state;
 SRC_DATA src_data;
@@ -47,27 +42,24 @@ int carrier_wave_max;
 
 char *audio_file = NULL;
 
-int rf_init(char *audio, float carrier_freq) {
-
-	// Set VFO
+void set_vfo(float carrier_freq) {
 	int sine_half_cycles = 0;
-	float tmp;
 
 	for (int i = 0; i < SAMPLE_RATE; i++) {
-		tmp = sin(2 * M_PI * carrier_freq * carrier_wave_max / SAMPLE_RATE);
-			if (i && tmp < 0.1e-6 && tmp > -0.1e-6) {
-			if (sine_half_cycles++ == 3) break;
-		}
+		float tmp = sin(2 * M_PI * carrier_freq * carrier_wave_max / SAMPLE_RATE);
+		if (tmp < 0.1e-6 && tmp > -0.1e-6 && sine_half_cycles++ == 2) break;
 		carrier_wave[carrier_wave_max++] = tmp;
 	}
+}
 
+int rf_init(char *audio) {
 	if (audio == NULL) return 0;
 
 	audio_file = audio;
 
 	SF_INFO sfinfo;
 
-	if (audio_file[0] == '-') {
+	if (strcmp(audio_file, "-") == 0) {
 		// For wwvsim
 		sfinfo.format = SF_FORMAT_RAW | SF_FORMAT_PCM_16;
 		sfinfo.samplerate = 16000;
@@ -88,45 +80,45 @@ int rf_init(char *audio, float carrier_freq) {
 		}
 	}
 
+	if (sfinfo.channels > 1) {
+		fprintf(stderr, "Input must be 1 channel\n");
+		return -1;
+	}
+
 	int in_samplerate = sfinfo.samplerate;
 	float upsample_factor = SAMPLE_RATE / in_samplerate;
-	int channels = sfinfo.channels;
 
-	printf("Input: %d Hz, %d channels, upsampling factor: %.2f\n", in_samplerate, channels, upsample_factor);
+	printf("Input: %d Hz, upsampling factor: %.2f\n", in_samplerate, upsample_factor);
 
-	audio_input = malloc(INPUT_DATA_SIZE * channels * sizeof(float));
-	resampled_input = malloc(DATA_SIZE * channels * sizeof(float));
+	audio_input = malloc(INPUT_DATA_SIZE * sizeof(float));
+	resampled_input = malloc(DATA_SIZE * sizeof(float));
 
 	src_data.src_ratio = upsample_factor;
 	src_data.output_frames = DATA_SIZE;
 	src_data.data_in = audio_input;
 	src_data.data_out = resampled_input;
 
-	if ((src_state = src_new(SRC_SINC_FASTEST, channels, &src_errorcode)) == NULL) {
-		fprintf(stderr, "Error: src_new failed: %s\n", src_strerror(src_errorcode));
+	int src_error;
+
+	if ((src_state = src_new(SRC_SINC_FASTEST, 1, &src_error)) == NULL) {
+		fprintf(stderr, "Error: src_new failed: %s\n", src_strerror(src_error));
 		return -1;
 	}
 
 	return 0;
 }
 
-int rf_get_samples(float *rf_buffer) {
-	int buf_size = 0;
-	int j = 0;
+float txpower;
 
-	if (audio_file == NULL) {
-		buf_size = INPUT_DATA_SIZE;
-		for (int i = 0; i < buf_size; i++) {
-			rf_buffer[i] = carrier_wave[carrier_phase] * 0.5;
-			if (++carrier_phase == carrier_wave_max) carrier_phase = 0;
-		}
-		return buf_size;
-	}
+void set_power(float vol) {
+	if (vol <= 100) txpower = vol / 100;
+}
 
+int get_audio() {
 	int audio_len;
 
 read_audio:
-	audio_len = sf_readf_float(inf, audio_input, INPUT_DATA_SIZE);
+	audio_len = sf_read_float(inf, audio_input, INPUT_DATA_SIZE);
 
 	if (audio_len < 0) {
 		fprintf(stderr, "Error reading audio\n");
@@ -134,36 +126,45 @@ read_audio:
 	} else if (audio_len == 0) {
 		if (sf_seek(inf, 0, SEEK_SET) < 0) {
 			memset(resampled_input, 0, INPUT_DATA_SIZE * sizeof(float));
-			buf_size = INPUT_DATA_SIZE;
+			audio_len = INPUT_DATA_SIZE;
 		} else goto read_audio; // Try to get new audio
 	} else {
 		src_data.input_frames = audio_len;
-		if ((src_errorcode = src_process(src_state, &src_data))) {
-			fprintf(stderr, "Error: src_process failed: %s\n", src_strerror(src_errorcode));
+		int src_error;
+		if ((src_error = src_process(src_state, &src_data))) {
+			fprintf(stderr, "Error: src_process failed: %s\n", src_strerror(src_error));
 			return -1;
 		}
-		buf_size = src_data.output_frames_gen;
+		audio_len = src_data.output_frames_gen;
 	}
 
-	for (int i = 0; i < buf_size; i++) {
-		float out;
-		if (channels == 2) {
-			out = (resampled_input[j] + resampled_input[j+1]) / 2;
-			j += 2;
-		} else {
-			out = resampled_input[j];
-			j++;
-		}
+	return audio_len;
+}
 
+int rf_get_samples(float *rf_buffer) {
+	int audio_len;
+
+	if (audio_file == NULL) {
+		audio_len = INPUT_DATA_SIZE;
+		for (int i = 0; i < audio_len; i++) {
+			rf_buffer[i] = carrier_wave[carrier_phase] * 0.5;
+			if (++carrier_phase == carrier_wave_max) carrier_phase = 0;
+		}
+		return audio_len;
+	}
+
+	if ((audio_len = get_audio()) < 0) return -1;
+
+	for (int i = 0; i < audio_len; i++) {
 		// Amplitude Modulation (A3E)
-		rf_buffer[i] =
-			carrier_wave[carrier_phase] * 0.5 +
-			carrier_wave[carrier_phase] * 0.5 * out;
+		rf_buffer[i] = carrier_wave[carrier_phase] * 0.5 * (resampled_input[i] + 1);
 
 		if (++carrier_phase == carrier_wave_max) carrier_phase = 0;
+
+		rf_buffer[i] *= txpower;
 	}
 
-	return buf_size;
+	return audio_len;
 }
 
 void rf_exit() {

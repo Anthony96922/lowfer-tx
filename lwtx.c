@@ -32,14 +32,14 @@ void stop() {
 	stop_tx = 1;
 }
 
-float volume;
-
-void postprocess(float *inbuf, short *outbuf, size_t inbufsize) {
+void float2char(float *inbuf, char *outbuf, size_t inbufsize) {
 	int j = 0;
-
+	int sample;
 	for (int i = 0; i < inbufsize; i++) {
-		outbuf[j] = outbuf[j+1] = (inbuf[i] * (volume/100)) * 32767;
-		j += 2;
+		sample = inbuf[i] * 32767;
+		outbuf[j+0] = outbuf[j+2] = sample & 255;
+		outbuf[j+1] = outbuf[j+3] = sample >> 8;
+		j += 4;
 	}
 }
 
@@ -50,7 +50,7 @@ int tx(char *audio, float freq_k, float vol) {
 
 	// RF output data
 	float rf_data[DATA_SIZE];
-	short dev_out[DATA_SIZE];
+	char dev_out[DATA_SIZE];
 
 	// AO
 	ao_device *device;
@@ -68,24 +68,27 @@ int tx(char *audio, float freq_k, float vol) {
 	}
 
 	// Initialize
-	if (rf_init(audio, freq_k * 1000) < 0) {
+	if (rf_init(audio) < 0) {
 		rf_exit();
 		return 1;
 	}
 
-	volume = vol;
+	// Set frequency
+	set_vfo(freq_k * 1000);
 
 	printf("Starting to transmit on %.1f kHz.\n", freq_k);
 
+	set_power(vol);
+
 	int samples;
 
-	for (;;) {
+	while (1) {
 		if ((samples = rf_get_samples(rf_data)) < 0) break;
 
-		postprocess(rf_data, dev_out, samples);
+		float2char(rf_data, dev_out, samples);
 
 		// TX
-		if (!ao_play(device, (char *)dev_out, samples * 2 * 2)) {
+		if (!ao_play(device, dev_out, samples * 2 * sizeof(short))) {
 			fprintf(stderr, "Error: could not play audio.\n");
 			break;
 		}
@@ -109,7 +112,7 @@ int main(int argc, char **argv) {
 	int opt;
 	char *audio = NULL;
 	float freq = 174;
-	float txpwr = 10;
+	float txpwr = 5;
 
 	const char	*short_opt = "a:f:p:h";
 	struct option	long_opt[] =

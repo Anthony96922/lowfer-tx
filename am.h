@@ -18,6 +18,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-extern int rf_init(char *audio, float carrier_freq);
+extern int rf_init(char *audio);
+extern void set_power(float vol);
+extern void set_vfo(float carrier_freq);
 extern int rf_get_samples(float *rf_buffer);
 extern void rf_exit();

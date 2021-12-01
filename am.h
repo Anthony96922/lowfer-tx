@@ -18,8 +18,22 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-extern int rf_init(char *audio);
-extern void set_power(float vol);
-extern void set_vfo(float carrier_freq);
-extern int rf_get_samples(float *rf_buffer);
-extern void rf_exit();
+#include <stdint.h>
+
+// Carrier wave
+typedef struct {
+	uint32_t freq;
+	uint32_t srate;
+	float *wave;
+	uint32_t phase;
+	uint32_t max;
+	float txpwr;
+} wave_t;
+
+extern int8_t init_input(wave_t *vfo, char *audio);
+extern void init_vfo(wave_t *vfo, uint32_t sample_rate);
+extern void set_vfo(wave_t *vfo, uint32_t frequency);
+extern void set_vfo_power(wave_t *vfo, float vol);
+extern int32_t rf_get_samples(wave_t *vfo, float *rf_buffer);
+extern void exit_vfo(wave_t *vfo);
+extern void exit_input();

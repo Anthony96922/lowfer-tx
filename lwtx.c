@@ -22,39 +22,48 @@
 #include <signal.h>
 #include <getopt.h>
 #include <ao/ao.h>
-
+#include <string.h>
+#include <math.h>
 #include "lwtx.h"
 #include "am.h"
 
-int stop_tx;
+static uint8_t stop_tx;
 
-void stop() {
+static void stop() {
 	stop_tx = 1;
 }
 
-void float2char(float *inbuf, char *outbuf, size_t inbufsize) {
-	int j = 0;
-	int sample;
-	for (int i = 0; i < inbufsize; i++) {
-		sample = inbuf[i] * 32767;
+static inline void float2char(float *inbuf, char *outbuf, size_t inbufsize) {
+	uint32_t j = 0;
+	int16_t sample;
+	for (uint16_t i = 0; i < inbufsize; i++) {
+		sample = lround(inbuf[i] * 32767.0);
 		outbuf[j+0] = outbuf[j+2] = sample & 255;
 		outbuf[j+1] = outbuf[j+3] = sample >> 8;
 		j += 4;
 	}
 }
 
-int tx(char *audio, float freq_k, float vol) {
+static int8_t tx(char *audio, float freq_k, float vol) {
+	// RF output data
+	float *rf_data;
+	char *dev_out;
+	// AO
+	ao_device *device;
+	ao_sample_format format;
+	// VFO
+	wave_t tx_vfo;
+
+	int32_t samples;
+
 	// Gracefully stop the transmitter on SIGINT or SIGTERM
 	signal(SIGINT, stop);
 	signal(SIGTERM, stop);
 
-	// RF output data
-	float rf_data[DATA_SIZE];
-	char dev_out[DATA_SIZE];
+	rf_data = malloc(DATA_SIZE * sizeof(float));
+	dev_out = malloc(DATA_SIZE * 4 * sizeof(char));
 
-	// AO
-	ao_device *device;
-	ao_sample_format format;
+	memset(&format, 0, sizeof(format));
 	format.bits = 16;
 	format.channels = 2;
 	format.rate = SAMPLE_RATE;
@@ -64,31 +73,31 @@ int tx(char *audio, float freq_k, float vol) {
 
 	if ((device = ao_open_live(ao_default_driver_id(), &format, NULL)) == NULL) {
 		fprintf(stderr, "Error: cannot open sound device.\n");
-		return 1;
+		goto exit;
 	}
 
-	// Initialize
-	if (rf_init(audio) < 0) {
-		rf_exit();
-		return 1;
-	}
+	// Initialize VFO
+	init_vfo(&tx_vfo, SAMPLE_RATE);
 
 	// Set frequency
-	set_vfo(freq_k * 1000);
+	printf("Setting VFO to %.1f kHz.\n", freq_k);
+	set_vfo(&tx_vfo, freq_k * 1000.0);
 
-	printf("Starting to transmit on %.1f kHz.\n", freq_k);
+	// Set TX power
+	printf("Setting transmit power to %.1f%%.\n", vol);
+	set_vfo_power(&tx_vfo, vol);
 
-	set_power(vol);
+	if (init_input(&tx_vfo, audio) < 0) goto exit;
 
-	int samples;
+	printf("Beginning to transmit.\n");
 
 	while (1) {
-		if ((samples = rf_get_samples(rf_data)) < 0) break;
+		if ((samples = rf_get_samples(&tx_vfo, rf_data)) < 0) break;
 
 		float2char(rf_data, dev_out, samples);
 
 		// TX
-		if (!ao_play(device, dev_out, samples * 2 * sizeof(short))) {
+		if (!ao_play(device, dev_out, samples * 2 * sizeof(int16_t))) {
 			fprintf(stderr, "Error: could not play audio.\n");
 			break;
 		}
@@ -100,10 +109,13 @@ int tx(char *audio, float freq_k, float vol) {
 	}
 
 	// Clean up
-	rf_exit();
-
+	exit_vfo(&tx_vfo);
+	exit_input();
+exit:
 	ao_close(device);
 	ao_shutdown();
+	free(rf_data);
+	free(dev_out);
 
 	return 0;
 }
@@ -111,8 +123,9 @@ int tx(char *audio, float freq_k, float vol) {
 int main(int argc, char **argv) {
 	int opt;
 	char *audio = NULL;
-	float freq = 174;
-	float txpwr = 5;
+	float freq = 174.0;
+	float txpwr = 5.0;
+	float max_freq = ((SAMPLE_RATE/1000)/2.0) * 0.96;
 
 	const char	*short_opt = "a:f:p:h";
 	struct option	long_opt[] =
@@ -125,10 +138,8 @@ int main(int argc, char **argv) {
 		{ 0,		0,		0,	0 }
 	};
 
-	while((opt = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1)
-	{
-		switch(opt)
-		{
+	while ((opt = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
+		switch(opt) {
 			case 'a':
 				audio = optarg;
 				break;
@@ -138,32 +149,41 @@ int main(int argc, char **argv) {
 				break;
 
 			case 'p':
-				txpwr = atoi(optarg);
+				txpwr = atof(optarg);
 				break;
 
 			case 'h':
-				fprintf(stderr, "Usage: %s [--audio (-a) audio file] [--freq (-f) freq (kHz)] [--power (-p) tx-power]\n", argv[0]);
-				return 1;
-				break;
-
+			case '?':
 			default:
-				fprintf(stderr, "(See -h / --help)\n");
+				fprintf(stderr,
+				"LWTX: longwave transmitter for amateur or LowFER\n"
+				"\n"
+				"Usage: %s\n"
+				"    [-a,--audio audio file]\n"
+				"    [-f,--freq frequency (kHz)]\n"
+				"    [-p,--power tx-power]\n"
+				"\n"
+				" NOTE! Depending on the sound card used, a filter may be needed\n"
+				" to limit out of band signals. Do not attach an amplifier\n"
+				" unless you know the output is clean or have a filter to keep\n"
+				" harmonics to a safe level. You've been warned.\n"
+				"\n", argv[0]);
 				return 1;
 				break;
 		}
 	}
 
-	if (freq < 170 || freq > 180) {
+	if (freq < 170.0 || freq > 180.0) {
 		fprintf(stderr, "Frequency should be between 170 - 180 kHz for LowFER operation.\n");
 	}
 
-	if (freq > (SAMPLE_RATE/1000)/2) {
-		fprintf(stderr, "Frequency must be below %d kHz.\n", (SAMPLE_RATE/1000)/2);
+	if (freq > max_freq) {
+		fprintf(stderr, "Frequency must be below %.1f kHz.\n", max_freq);
 		return -1;
 	}
 
-	if (txpwr < 1 || txpwr > 100) {
-		fprintf(stderr, "Transmit power must be between 1 - 100.\n");
+	if (txpwr < 0.0 || txpwr > 100.0) {
+		fprintf(stderr, "Transmit power must be between 0-100.\n");
 		return 1;
 	}
 

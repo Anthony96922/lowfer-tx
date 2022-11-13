@@ -37,7 +37,7 @@ static inline void float2char(float *inbuf, char *outbuf, size_t inbufsize) {
 	uint32_t j = 0;
 	int16_t sample;
 	for (uint16_t i = 0; i < inbufsize; i++) {
-		sample = lround(inbuf[i] * 32767.0);
+		sample = lround(inbuf[i] * 32767.0f);
 		outbuf[j+0] = outbuf[j+2] = sample & 255;
 		outbuf[j+1] = outbuf[j+3] = sample >> 8;
 		j += 4;
@@ -45,18 +45,18 @@ static inline void float2char(float *inbuf, char *outbuf, size_t inbufsize) {
 }
 
 static int8_t tx(char *audio, float freq_k, float vol) {
-	// RF output data
+	/* RF output data */
 	float *rf_data;
 	char *dev_out;
-	// AO
+	/* AO */
 	ao_device *device;
 	ao_sample_format format;
-	// VFO
+	/* VFO */
 	wave_t tx_vfo;
 
 	int32_t samples;
 
-	// Gracefully stop the transmitter on SIGINT or SIGTERM
+	/* Gracefully stop the transmitter on SIGINT or SIGTERM */
 	signal(SIGINT, stop);
 	signal(SIGTERM, stop);
 
@@ -71,19 +71,20 @@ static int8_t tx(char *audio, float freq_k, float vol) {
 
 	ao_initialize();
 
-	if ((device = ao_open_live(ao_default_driver_id(), &format, NULL)) == NULL) {
+	device = ao_open_live(ao_default_driver_id(), &format, NULL);
+	if (device == NULL) {
 		fprintf(stderr, "Error: cannot open sound device.\n");
 		goto exit;
 	}
 
-	// Initialize VFO
+	/* Initialize VFO */
 	init_vfo(&tx_vfo, SAMPLE_RATE);
 
-	// Set frequency
+	/* Set frequency */
 	printf("Setting VFO to %.1f kHz.\n", freq_k);
-	set_vfo(&tx_vfo, freq_k * 1000.0);
+	set_vfo(&tx_vfo, freq_k * 1000.0f);
 
-	// Set TX power
+	/* Set TX power */
 	printf("Setting transmit power to %.1f%%.\n", vol);
 	set_vfo_power(&tx_vfo, vol);
 
@@ -96,7 +97,7 @@ static int8_t tx(char *audio, float freq_k, float vol) {
 
 		float2char(rf_data, dev_out, samples);
 
-		// TX
+		/* TX */
 		if (!ao_play(device, dev_out, samples * 2 * sizeof(int16_t))) {
 			fprintf(stderr, "Error: could not play audio.\n");
 			break;
@@ -108,7 +109,7 @@ static int8_t tx(char *audio, float freq_k, float vol) {
 		}
 	}
 
-	// Clean up
+	/* Clean up */
 	exit_vfo(&tx_vfo);
 	exit_input();
 exit:
@@ -123,19 +124,21 @@ exit:
 int main(int argc, char **argv) {
 	int opt;
 	char *audio = NULL;
-	float freq = 174.0;
-	float txpwr = 5.0;
-	float max_freq = ((SAMPLE_RATE/1000)/2.0) * 0.96;
+	float freq = 174.0f;
+	float txpwr = 5.0f;
+	float max_freq = (SAMPLE_RATE / 1000 / 2.0f) * 0.96f;
+	uint8_t nyquist_check = 1;
 
-	const char	*short_opt = "a:f:p:h";
+	const char	*short_opt = "a:f:p:nh";
 	struct option	long_opt[] =
 	{
-		{"audio",	required_argument, NULL, 'a'},
-		{"freq",	required_argument, NULL, 'f'},
-		{"power",	required_argument, NULL, 'p'},
+		{"audio",	required_argument,	NULL,	'a'},
+		{"freq",	required_argument,	NULL,	'f'},
+		{"power",	required_argument,	NULL,	'p'},
+		{"nyq",		no_argument,		NULL,	'n'},
 
-		{"help",	no_argument, NULL, 'h'},
-		{ 0,		0,		0,	0 }
+		{"help",	no_argument,		NULL,	'h'},
+		{0,		0,			0,	0}
 	};
 
 	while ((opt = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
@@ -152,6 +155,10 @@ int main(int argc, char **argv) {
 				txpwr = atof(optarg);
 				break;
 
+			case 'n':
+				nyquist_check = 0;
+				break;
+
 			case 'h':
 			case '?':
 			default:
@@ -161,7 +168,7 @@ int main(int argc, char **argv) {
 				"Usage: %s\n"
 				"    [-a,--audio audio file]\n"
 				"    [-f,--freq frequency (kHz)]\n"
-				"    [-p,--power tx-power]\n"
+				"    [-p,--power tx-power (%%)]\n"
 				"\n"
 				" NOTE! Depending on the sound card used, a filter may be needed\n"
 				" to limit out of band signals. Do not attach an amplifier\n"
@@ -173,16 +180,16 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	if (freq < 170.0 || freq > 180.0) {
-		fprintf(stderr, "Frequency should be between 170 - 180 kHz for LowFER operation.\n");
+	if (freq < 170.0f || freq > 180.0f) {
+		fprintf(stderr, "Frequency should be between 170-180 kHz for LowFER operation.\n");
 	}
 
-	if (freq > max_freq) {
+	if (!nyquist_check && freq > max_freq) {
 		fprintf(stderr, "Frequency must be below %.1f kHz.\n", max_freq);
 		return -1;
 	}
 
-	if (txpwr < 0.0 || txpwr > 100.0) {
+	if (txpwr < 0.0f || txpwr > 100.0f) {
 		fprintf(stderr, "Transmit power must be between 0-100.\n");
 		return 1;
 	}

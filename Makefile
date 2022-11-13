@@ -1,10 +1,10 @@
 CC = gcc
 CFLAGS = -Wall -O2 -pedantic
 
-LWTX_OBJ = am.o lwtx.o
+OBJ = am.o lwtx.o ssb.o
 
-lwtx: $(LWTX_OBJ)
-	$(CC) $(LWTX_OBJ) -o lwtx -s -lm -lao -lsndfile -lsamplerate
+lwtx: $(OBJ)
+	$(CC) $(OBJ) -o lwtx -lm -lao -lsndfile -lsamplerate
 
 lwtx.o: lwtx.h am.h
 

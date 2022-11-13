@@ -50,8 +50,8 @@ void set_vfo(wave_t *vfo, uint32_t frequency) {
 	memset(vfo->wave, 0, vfo->srate * sizeof(float));
 
 	for (uint32_t i = 0; i < vfo->srate; i++) {
-		float sample = sin(2 * M_PI * vfo->freq * max / vfo->srate);
-		if (sample < 0.1e-6 && sample > -0.1e-6) {
+		float sample = sinf(2 * M_PI * vfo->freq * max / vfo->srate);
+		if (sample < 0.1e-6f && sample > -0.1e-6f) {
 			if (sine_half_cycles++ == 2) break;
 		} else {
 			vfo->wave[max] = sample;
@@ -88,7 +88,7 @@ int8_t init_input(wave_t *vfo, char *audio) {
 		return -1;
 	}
 
-	// output sample rate
+	/* output sample rate */
 	printf("Input sample rate: %d\n", sfinfo.samplerate);
 
 	audio_input = malloc(INPUT_DATA_SIZE * sizeof(float));
@@ -103,7 +103,8 @@ int8_t init_input(wave_t *vfo, char *audio) {
 	int src_error;
 
 	if ((src_state = src_new(SRC_SINC_FASTEST, 1, &src_error)) == NULL) {
-		fprintf(stderr, "Error: src_new failed: %s\n", src_strerror(src_error));
+		fprintf(stderr, "Error: src_new failed: %s\n",
+			src_strerror(src_error));
 		return -1;
 	}
 
@@ -113,7 +114,7 @@ int8_t init_input(wave_t *vfo, char *audio) {
 }
 
 void set_vfo_power(wave_t *vfo, float p) {
-	if (p >= 0.0 && p <= 100.0) vfo->txpwr = p / 100.0;
+	if (p >= 0.0f && p <= 100.0f) vfo->txpwr = p / 100.0f;
 }
 
 static inline int32_t get_audio() {
@@ -122,7 +123,10 @@ static inline int32_t get_audio() {
 	int buffer_offset = 0;
 
 	while (frames_to_read) {
-		if ((audio_len = sf_readf_float(inf, audio_input + buffer_offset, frames_to_read)) < 0) {
+		audio_len = sf_readf_float(inf,
+			audio_input + buffer_offset,
+			frames_to_read);
+		if (audio_len < 0) {
 			fprintf(stderr, "Error reading audio\n");
 			return -1;
 		}
@@ -139,8 +143,13 @@ static inline int32_t get_audio() {
 
 static inline int32_t rf_get_carrier(wave_t *vfo, float *buf) {
 	for (uint32_t i = 0; i < INPUT_DATA_SIZE; i++) {
-		buf[i] = vfo->wave[vfo->phase++] * vfo->txpwr;
-		if (vfo->phase >= vfo->max) vfo->phase = 0;
+		/* CW */
+		buf[i] = vfo->wave[vfo->phase];
+
+		/* TX power adjustment */
+		buf[i] *= vfo->txpwr;
+
+		if (++vfo->phase >= vfo->max) vfo->phase = 0;
 	}
 	return INPUT_DATA_SIZE;
 }
@@ -150,9 +159,16 @@ static inline int32_t rf_get_am(wave_t *vfo, float *buf) {
 	if (audio_len < 0) return -1;
 
 	for (int32_t i = 0; i < audio_len; i++) {
-		// Amplitude Modulation (A3E)
-		buf[i] = vfo->wave[vfo->phase++] * (resampled_input[i] + 1.0) * vfo->txpwr;
-		if (vfo->phase >= vfo->max) vfo->phase = 0;
+		/* CW */
+		buf[i] = vfo->wave[vfo->phase] * 0.5f;
+
+		/* Amplitude Modulation (A3E) */
+		buf[i] *= (resampled_input[i] + 1.0f) * 0.5f;
+
+		/* TX power adjustment */
+		buf[i] *= vfo->txpwr;
+
+		if (++vfo->phase >= vfo->max) vfo->phase = 0;
 	}
 
         return audio_len;
@@ -168,7 +184,8 @@ int32_t rf_get_samples(wave_t *vfo, float *rf_buffer) {
 
 void exit_input() {
 	if (audio_input_used) {
-		if (sf_close(inf)) fprintf(stderr, "Error closing audio file\n");
+		if (sf_close(inf))
+			fprintf(stderr, "Error closing audio file\n");
 		free(audio_input);
 		free(resampled_input);
 		src_delete(src_state);

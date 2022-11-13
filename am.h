@@ -20,7 +20,7 @@
 
 #include <stdint.h>
 
-// Carrier wave
+/* Carrier wave */
 typedef struct {
 	uint32_t freq;
 	uint32_t srate;

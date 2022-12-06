@@ -20,5 +20,5 @@
 
 #define SAMPLE_RATE	384000 /* Nyquist frequency is 192 kHz */
 
-#define INPUT_DATA_SIZE	32
+#define INPUT_DATA_SIZE	64
 #define DATA_SIZE	INPUT_DATA_SIZE * 48 /* SRC ratio may be up to 48 */

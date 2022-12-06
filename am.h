@@ -24,10 +24,12 @@
 typedef struct {
 	uint32_t freq;
 	uint32_t srate;
-	float *wave;
+	float *wave_i;
+	float *wave_q;
 	uint32_t phase;
 	uint32_t max;
 	float txpwr;
+	uint8_t channels;
 } wave_t;
 
 extern int8_t init_input(wave_t *vfo, char *audio);

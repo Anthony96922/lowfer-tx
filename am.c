@@ -39,22 +39,27 @@ static SRC_DATA src_data;
 void init_vfo(wave_t *vfo, uint32_t sample_rate) {
 	memset(vfo, 0, sizeof(wave_t));
 	vfo->srate = sample_rate;
-	vfo->wave = malloc(sample_rate * sizeof(float));
+	vfo->wave_i = malloc(sample_rate * sizeof(float));
+	vfo->wave_q = malloc(sample_rate * sizeof(float));
 }
 
 void set_vfo(wave_t *vfo, uint32_t frequency) {
 	uint8_t sine_half_cycles = 0;
 	uint32_t max = 0;
+	double sample_i, sample_q;
 
 	vfo->freq = frequency;
-	memset(vfo->wave, 0, vfo->srate * sizeof(float));
+	memset(vfo->wave_i, 0, vfo->srate * sizeof(float));
+	memset(vfo->wave_q, 0, vfo->srate * sizeof(float));
 
 	for (uint32_t i = 0; i < vfo->srate; i++) {
-		float sample = sinf(2 * M_PI * vfo->freq * max / vfo->srate);
-		if (sample < 0.1e-6f && sample > -0.1e-6f) {
+		sample_i = cos(2.0 * M_PI * vfo->freq * max / vfo->srate);
+		sample_q = sin(2.0 * M_PI * vfo->freq * max / vfo->srate);
+		if (sample_q < 0.1e-6 && sample_q > -0.1e-6) {
 			if (sine_half_cycles++ == 2) break;
 		} else {
-			vfo->wave[max] = sample;
+			vfo->wave_i[max] = (float)sample_i;
+			vfo->wave_q[max] = (float)sample_q;
 		}
 		max++;
 	}
@@ -83,18 +88,24 @@ int8_t init_input(wave_t *vfo, char *audio) {
 		}
 	}
 
-	if (sfinfo.channels != 1) {
-		fprintf(stderr, "Input must be 1 channel\n");
+	if (sfinfo.channels == 2) {
+		printf("Input is 2 channel. Using IQ modulator\n");
+	} else if (sfinfo.channels == 1) {
+		printf("Input is 1 channel. Using AM\n");
+	} else {
+		fprintf(stderr, "Invalid number of channels\n");
 		return -1;
 	}
+
+	vfo->channels = sfinfo.channels;
 
 	/* output sample rate */
 	printf("Input sample rate: %d\n", sfinfo.samplerate);
 
-	audio_input = malloc(INPUT_DATA_SIZE * sizeof(float));
-	resampled_input = malloc(DATA_SIZE * sizeof(float));
+	audio_input = malloc(INPUT_DATA_SIZE * sizeof(float) * sfinfo.channels);
+	resampled_input = malloc(DATA_SIZE * sizeof(float) * sfinfo.channels);
 
-	src_data.src_ratio = (double)vfo->srate / sfinfo.samplerate;
+	src_data.src_ratio = (double)vfo->srate / (double)sfinfo.samplerate;
 	src_data.input_frames = INPUT_DATA_SIZE;
 	src_data.output_frames = DATA_SIZE;
 	src_data.data_in = audio_input;
@@ -102,7 +113,7 @@ int8_t init_input(wave_t *vfo, char *audio) {
 
 	int src_error;
 
-	if ((src_state = src_new(SRC_SINC_FASTEST, 1, &src_error)) == NULL) {
+	if ((src_state = src_new(SRC_SINC_FASTEST, sfinfo.channels, &src_error)) == NULL) {
 		fprintf(stderr, "Error: src_new failed: %s\n",
 			src_strerror(src_error));
 		return -1;
@@ -117,21 +128,21 @@ void set_vfo_power(wave_t *vfo, float p) {
 	if (p >= 0.0f && p <= 100.0f) vfo->txpwr = p / 100.0f;
 }
 
-static inline int32_t get_audio() {
-	int audio_len;
+static inline int32_t get_audio(wave_t *vfo) {
+	int audio_len = 0;
 	int frames_to_read = INPUT_DATA_SIZE;
-	int buffer_offset = 0;
+	int read_len;
 
-	while (frames_to_read) {
-		audio_len = sf_readf_float(inf,
-			audio_input + buffer_offset,
+	while (frames_to_read > 0 && audio_len < INPUT_DATA_SIZE) {
+		read_len = sf_readf_float(inf,
+			audio_input + audio_len * vfo->channels,
 			frames_to_read);
 		if (audio_len < 0) {
 			fprintf(stderr, "Error reading audio\n");
 			return -1;
 		}
 
-		buffer_offset += audio_len;
+		audio_len += read_len;
 		frames_to_read -= audio_len;
 		if (audio_len == 0 && sf_seek(inf, 0, SEEK_SET) < 0) return -1;
 	}
@@ -144,23 +155,25 @@ static inline int32_t get_audio() {
 static inline int32_t rf_get_carrier(wave_t *vfo, float *buf) {
 	for (uint32_t i = 0; i < INPUT_DATA_SIZE; i++) {
 		/* CW */
-		buf[i] = vfo->wave[vfo->phase];
+		buf[i] = vfo->wave_i[vfo->phase];
 
 		/* TX power adjustment */
 		buf[i] *= vfo->txpwr;
 
-		if (++vfo->phase >= vfo->max) vfo->phase = 0;
+		if (++vfo->phase == vfo->max) vfo->phase = 0;
 	}
 	return INPUT_DATA_SIZE;
 }
 
 static inline int32_t rf_get_am(wave_t *vfo, float *buf) {
-	int32_t audio_len = get_audio();
+	int32_t audio_len;
+
+	audio_len = get_audio(vfo);
 	if (audio_len < 0) return -1;
 
 	for (int32_t i = 0; i < audio_len; i++) {
 		/* CW */
-		buf[i] = vfo->wave[vfo->phase] * 0.5f;
+		buf[i] = vfo->wave_i[vfo->phase] * 0.5f;
 
 		/* Amplitude Modulation (A3E) */
 		buf[i] *= (resampled_input[i] + 1.0f) * 0.5f;
@@ -168,18 +181,51 @@ static inline int32_t rf_get_am(wave_t *vfo, float *buf) {
 		/* TX power adjustment */
 		buf[i] *= vfo->txpwr;
 
-		if (++vfo->phase >= vfo->max) vfo->phase = 0;
+		if (++vfo->phase == vfo->max) vfo->phase = 0;
 	}
 
-        return audio_len;
+	return audio_len;
+}
+
+static inline int32_t rf_get_iq(wave_t *vfo, float *buf) {
+	int32_t audio_len;
+	int32_t j = 0;
+
+	audio_len = get_audio(vfo);
+	if (audio_len < 0) return -1;
+
+	for (int32_t i = 0; i < audio_len; i++) {
+		buf[i] = 0.0f;
+
+		/* I */
+		buf[i] += vfo->wave_i[vfo->phase] * resampled_input[j+0];
+
+		/* Q */
+		buf[i] += vfo->wave_q[vfo->phase] * resampled_input[j+1];
+
+		/* TX power adjustment */
+		buf[i] *= vfo->txpwr;
+
+		j += 2;
+
+		if (++vfo->phase == vfo->max) vfo->phase = 0;
+	}
+
+	return audio_len;
 }
 
 int32_t rf_get_samples(wave_t *vfo, float *rf_buffer) {
+	int32_t ret;
 	if (audio_input_used) {
-		return rf_get_am(vfo, rf_buffer);
+		if (vfo->channels == 2) {
+			ret = rf_get_iq(vfo, rf_buffer);
+		} else {
+			ret = rf_get_am(vfo, rf_buffer);
+		}
 	} else {
-		return rf_get_carrier(vfo, rf_buffer);
+		ret = rf_get_carrier(vfo, rf_buffer);
 	}
+	return ret;
 }
 
 void exit_input() {
@@ -193,5 +239,6 @@ void exit_input() {
 }
 
 void exit_vfo(wave_t *vfo) {
-	free(vfo->wave);
+	free(vfo->wave_i);
+	free(vfo->wave_q);
 }

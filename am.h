@@ -21,7 +21,7 @@
 #include <stdint.h>
 
 /* Carrier wave */
-typedef struct {
+typedef struct wave_t {
 	uint32_t freq;
 	uint32_t srate;
 	float *wave_i;
@@ -32,10 +32,10 @@ typedef struct {
 	uint8_t channels;
 } wave_t;
 
-extern int8_t init_input(wave_t *vfo, char *audio);
-extern void init_vfo(wave_t *vfo, uint32_t sample_rate);
-extern void set_vfo(wave_t *vfo, uint32_t frequency);
-extern void set_vfo_power(wave_t *vfo, float vol);
-extern int32_t rf_get_samples(wave_t *vfo, float *rf_buffer);
-extern void exit_vfo(wave_t *vfo);
+extern int8_t init_input(struct wave_t *vfo, char *audio);
+extern void init_vfo(struct wave_t *vfo, uint32_t sample_rate);
+extern void set_vfo(struct wave_t *vfo, uint32_t frequency);
+extern void set_vfo_power(struct wave_t *vfo, float vol);
+extern int32_t rf_get_samples(struct wave_t *vfo, char *rf_buffer);
+extern void exit_vfo(struct wave_t *vfo);
 extern void exit_input();

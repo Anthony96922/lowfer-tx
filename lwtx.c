@@ -33,26 +33,14 @@ static void stop() {
 	stop_tx = 1;
 }
 
-static inline void float2char(float *inbuf, char *outbuf, size_t inbufsize) {
-	uint32_t j = 0;
-	int16_t sample;
-	for (uint16_t i = 0; i < inbufsize; i++) {
-		sample = lround(inbuf[i] * 32767.0f);
-		outbuf[j+0] = outbuf[j+2] = sample & 255;
-		outbuf[j+1] = outbuf[j+3] = sample >> 8;
-		j += 4;
-	}
-}
-
 static int8_t tx(char *audio, float freq_k, float vol) {
 	/* RF output data */
-	float *rf_data;
-	char *dev_out;
+	char *rf_data;
 	/* AO */
 	ao_device *device;
 	ao_sample_format format;
 	/* VFO */
-	wave_t tx_vfo;
+	struct wave_t tx_vfo;
 
 	int32_t samples;
 
@@ -60,8 +48,7 @@ static int8_t tx(char *audio, float freq_k, float vol) {
 	signal(SIGINT, stop);
 	signal(SIGTERM, stop);
 
-	rf_data = malloc(DATA_SIZE * sizeof(float));
-	dev_out = malloc(DATA_SIZE * 4 * sizeof(char));
+	rf_data = malloc(DATA_SIZE * 4 * sizeof(char));
 
 	memset(&format, 0, sizeof(format));
 	format.bits = 16;
@@ -95,10 +82,8 @@ static int8_t tx(char *audio, float freq_k, float vol) {
 	while (1) {
 		if ((samples = rf_get_samples(&tx_vfo, rf_data)) < 0) break;
 
-		float2char(rf_data, dev_out, samples);
-
 		/* TX */
-		if (!ao_play(device, dev_out, samples * 2 * sizeof(int16_t))) {
+		if (!ao_play(device, rf_data, samples * 2 * sizeof(int16_t))) {
 			fprintf(stderr, "Error: could not play audio.\n");
 			break;
 		}
@@ -116,7 +101,6 @@ exit:
 	ao_close(device);
 	ao_shutdown();
 	free(rf_data);
-	free(dev_out);
 
 	return 0;
 }

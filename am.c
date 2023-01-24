@@ -36,14 +36,14 @@ static SNDFILE *inf;
 static SRC_STATE *src_state;
 static SRC_DATA src_data;
 
-void init_vfo(wave_t *vfo, uint32_t sample_rate) {
-	memset(vfo, 0, sizeof(wave_t));
+void init_vfo(struct wave_t *vfo, uint32_t sample_rate) {
+	memset(vfo, 0, sizeof(struct wave_t));
 	vfo->srate = sample_rate;
-	vfo->wave_i = malloc(sample_rate * sizeof(float));
-	vfo->wave_q = malloc(sample_rate * sizeof(float));
+	vfo->wave_i = malloc(vfo->srate * sizeof(float));
+	vfo->wave_q = malloc(vfo->srate * sizeof(float));
 }
 
-void set_vfo(wave_t *vfo, uint32_t frequency) {
+void set_vfo(struct wave_t *vfo, uint32_t frequency) {
 	uint8_t sine_half_cycles = 0;
 	uint32_t max = 0;
 	double sample_i, sample_q;
@@ -67,7 +67,7 @@ void set_vfo(wave_t *vfo, uint32_t frequency) {
 	vfo->max = max;
 }
 
-int8_t init_input(wave_t *vfo, char *audio) {
+int8_t init_input(struct wave_t *vfo, char *audio) {
 	SF_INFO sfinfo;
 
 	if (audio == NULL) return 0;
@@ -124,11 +124,11 @@ int8_t init_input(wave_t *vfo, char *audio) {
 	return 0;
 }
 
-void set_vfo_power(wave_t *vfo, float p) {
+void set_vfo_power(struct wave_t *vfo, float p) {
 	if (p >= 0.0f && p <= 100.0f) vfo->txpwr = p / 100.0f;
 }
 
-static inline int32_t get_audio(wave_t *vfo) {
+static inline int32_t get_audio(struct wave_t *vfo) {
 	int audio_len = 0;
 	int frames_to_read = INPUT_DATA_SIZE;
 	int read_len;
@@ -152,61 +152,62 @@ static inline int32_t get_audio(wave_t *vfo) {
 	return src_data.output_frames_gen;
 }
 
-static inline int32_t rf_get_carrier(wave_t *vfo, float *buf) {
+static inline int32_t rf_get_carrier(struct wave_t *vfo, char *buf) {
+	float samplef;
+	int16_t sample;
+	int32_t j = 0;
+
 	for (uint32_t i = 0; i < INPUT_DATA_SIZE; i++) {
 		/* CW */
-		buf[i] = vfo->wave_i[vfo->phase];
+		samplef = vfo->wave_i[vfo->phase];
 
 		/* TX power adjustment */
-		buf[i] *= vfo->txpwr;
+		samplef *= vfo->txpwr;
+
+		sample = lround(samplef * 32767.0f);
+
+		buf[j+0] = buf[j+2] = sample & 255;
+		buf[j+1] = buf[j+3] = sample >> 8;
+
+		j += 4;
 
 		if (++vfo->phase == vfo->max) vfo->phase = 0;
 	}
+
 	return INPUT_DATA_SIZE;
 }
 
-static inline int32_t rf_get_am(wave_t *vfo, float *buf) {
+static inline int32_t rf_get_am(struct wave_t *vfo, char *buf) {
 	int32_t audio_len;
-
-	audio_len = get_audio(vfo);
-	if (audio_len < 0) return -1;
-
-	for (int32_t i = 0; i < audio_len; i++) {
-		/* CW */
-		buf[i] = vfo->wave_i[vfo->phase] * 0.5f;
-
-		/* Amplitude Modulation (A3E) */
-		buf[i] *= (resampled_input[i] + 1.0f) * 0.5f;
-
-		/* TX power adjustment */
-		buf[i] *= vfo->txpwr;
-
-		if (++vfo->phase == vfo->max) vfo->phase = 0;
-	}
-
-	return audio_len;
-}
-
-static inline int32_t rf_get_iq(wave_t *vfo, float *buf) {
-	int32_t audio_len;
+	float samplef;
+	int16_t sample, bbsample;
 	int32_t j = 0;
 
 	audio_len = get_audio(vfo);
 	if (audio_len < 0) return -1;
 
 	for (int32_t i = 0; i < audio_len; i++) {
-		buf[i] = 0.0f;
+		/* CW */
+		samplef = vfo->wave_i[vfo->phase] * 0.5f;
 
-		/* I */
-		buf[i] += vfo->wave_i[vfo->phase] * resampled_input[j+0];
-
-		/* Q */
-		buf[i] += vfo->wave_q[vfo->phase] * resampled_input[j+1];
+		/* Amplitude Modulation (A3E) */
+		samplef *= (resampled_input[i] + 1.0f) * 0.5f;
 
 		/* TX power adjustment */
-		buf[i] *= vfo->txpwr;
+		samplef *= vfo->txpwr;
 
-		j += 2;
+		sample = lround(samplef * 32767.0f);
+		bbsample = lround(resampled_input[i] * 32767.0f);
+
+		/* send AM signal to L channel */
+		buf[j+0] = sample & 255;
+		buf[j+1] = sample >> 8;
+
+		/* send unmodulated audio to R channel */
+		buf[j+2] = bbsample & 255;
+		buf[j+3] = bbsample >> 8;
+
+		j += 4;
 
 		if (++vfo->phase == vfo->max) vfo->phase = 0;
 	}
@@ -214,7 +215,42 @@ static inline int32_t rf_get_iq(wave_t *vfo, float *buf) {
 	return audio_len;
 }
 
-int32_t rf_get_samples(wave_t *vfo, float *rf_buffer) {
+static inline int32_t rf_get_iq(struct wave_t *vfo, char *buf) {
+	int32_t audio_len;
+	int32_t j = 0, k = 0;
+	int16_t sample;
+	float samplef;
+
+	audio_len = get_audio(vfo);
+	if (audio_len < 0) return -1;
+
+	for (int32_t i = 0; i < audio_len; i++) {
+		samplef = 0.0f;
+
+		/* I */
+		samplef += vfo->wave_i[vfo->phase] * resampled_input[j+0];
+
+		/* Q */
+		samplef += vfo->wave_q[vfo->phase] * resampled_input[j+1];
+
+		/* TX power adjustment */
+		samplef *= vfo->txpwr;
+
+		sample = lround(samplef * 32767.0f);
+
+		buf[k+0] = buf[k+2] = sample & 255;
+		buf[k+1] = buf[k+3] = sample >> 8;
+
+		j += 2;
+		k += 4;
+
+		if (++vfo->phase == vfo->max) vfo->phase = 0;
+	}
+
+	return audio_len;
+}
+
+int32_t rf_get_samples(struct wave_t *vfo, char *rf_buffer) {
 	int32_t ret;
 	if (audio_input_used) {
 		if (vfo->channels == 2) {
@@ -238,7 +274,7 @@ void exit_input() {
 	}
 }
 
-void exit_vfo(wave_t *vfo) {
+void exit_vfo(struct wave_t *vfo) {
 	free(vfo->wave_i);
 	free(vfo->wave_q);
 }
